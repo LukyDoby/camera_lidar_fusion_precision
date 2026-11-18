@@ -6,6 +6,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/float64.hpp"
 
 #include <iostream>
 #include <random>
@@ -94,6 +95,7 @@ class Ransac_node : public rclcpp::Node
       
       pub_ransac_ptCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/segmented_plane_cloud", 10);
       pub_colored_image = this->create_publisher<sensor_msgs::msg::Image>("/image_color", 10);
+      pub_fusion_precision = this->create_publisher<std_msgs::msg::Float64>("/fusion_precision", 10);
           
       bufferCamLidTf_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
       bufferLidarOrigin_= std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -374,13 +376,11 @@ class Ransac_node : public rclcpp::Node
           }
         }
 
-        fusion_precision = (num_pts_in_polygon/total_num_pts) *100;
-        rclcpp::Time fusion_precision_stamp = msg->header.stamp;
-        double timestamp_sec = fusion_precision_stamp.seconds(); 
+        fusion_precision = (total_num_pts > 0) ? (num_pts_in_polygon / total_num_pts) * 100.0 : 0.0;
 
-        fusion_precision = 0;
-        num_pts_in_polygon = 0;
-        total_num_pts = 0;
+        std_msgs::msg::Float64 fusion_precision_msg;
+        fusion_precision_msg.data = fusion_precision;
+        pub_fusion_precision->publish(fusion_precision_msg);
 
         auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
 
@@ -419,6 +419,7 @@ class Ransac_node : public rclcpp::Node
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr sub_camera_info;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ransac_ptCloud;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_colored_image;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pub_fusion_precision;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_ptCloud_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_camera_img;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_camera_info;
