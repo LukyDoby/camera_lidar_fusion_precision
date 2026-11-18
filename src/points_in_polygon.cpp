@@ -83,11 +83,14 @@ class Ransac_node : public rclcpp::Node
     {
       rclcpp::QoS qos(10);
       auto rmw_qos_profile = qos.get_rmw_qos_profile();
-      sub_ptCloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/lidar/poincloud",10, std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1));
-      
-      sub_camera_img = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/image", 10, std::bind(&Ransac_node::imageCallback, this, std::placeholders::_1));
+
+      ptcloud_sub_.subscribe(this, "/lidar/poincloud", rmw_qos_profile);
+      image_sub_.subscribe(this, "/camera/image", rmw_qos_profile);
+      sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+        SyncPolicy(10), ptcloud_sub_, image_sub_);
+      sync_->registerCallback(
+        std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1, std::placeholders::_2));
+
       sub_camera_info = this->create_subscription<sensor_msgs::msg::CameraInfo>(
       "/camera_info", 10, std::bind(&Ransac_node::cam_cb, this, std::placeholders::_1));
       
@@ -141,9 +144,9 @@ class Ransac_node : public rclcpp::Node
       int count = 0;
 
       for (int i = 0; i < n; i++) {
-        Point p1 = polygon[i];
+        cv::Point2f p1 = polygon[i];
 
-        Point p2 = polygon[(i + 1) % n];
+        cv::Point2f p2 = polygon[(i + 1) % n];
 
         if ((point.y > min(p1.y, p2.y)) && (point.y <= max(p1.y, p2.y)) && (point.x <= max(p1.x, p2.x)))
         {
@@ -156,12 +159,16 @@ class Ransac_node : public rclcpp::Node
       }
       return count % 2 == 1;
     }
-    void ptCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
+    void ptCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
+                          const sensor_msgs::msg::Image::ConstSharedPtr image_msg)
     {
       public_camera_info();
 
+      cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::RGB8);
+      cv::Mat modifiable_image = cv_ptr->image.clone();
+
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud = pcl::make_shared<pcl::PointCloud<pcl::PointXYZ>>();  //(new pcl::PointCloud<pcl::PointXYZ>)
-      
+
       pcl::fromROSMsg(*msg, *cloud);
 
       pcl::PointIndices::Ptr points_in(new pcl::PointIndices());
@@ -206,191 +213,160 @@ class Ransac_node : public rclcpp::Node
 
         pub_ransac_ptCloud->publish(*output);
       }
-      else if(cv_ptr_temp != nullptr)
-      {
-        cv_bridge::CvImageConstPtr cv_ptr;
-        cv_ptr = cv_ptr_temp;
-        cv::Mat modifiable_image = cv_ptr->image.clone();
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-        pub_colored_image->publish(*modified_msg);
-        //RCLCPP_INFO(this->get_logger(), "cv_ptr_temp == nullptr || cloud->points.size() <= 3");
-        return;
-      }
       else
       {
-        RCLCPP_INFO(this->get_logger(), "Cannot publish colored image.");
-        return; 
-      } 
-      
+        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+        pub_colored_image->publish(*modified_msg);
+        return;
+      }
+
       geometry_msgs::msg::TransformStamped tfGeomLidartoCam_actual;
       image_geometry::PinholeCameraModel cam_model_actual = cam_model;
 
-      if(cv_ptr_temp != nullptr)
-      {
-        cv_bridge::CvImageConstPtr cv_ptr;
-        cv_ptr = cv_ptr_temp;
-        cv::Mat modifiable_image = cv_ptr->image.clone();
-    
-        // Detecting checkerboard
-        cv::Size patternSize(8, 5);  // Inner corners
-        std::vector<cv::Point2f> projected_pts;
-        std::vector<cv::Point2f> projected_pts_final;
-        found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
+      // Detecting checkerboard
+      cv::Size patternSize(8, 5);  // Inner corners
+      std::vector<cv::Point2f> projected_pts;
+      std::vector<cv::Point2f> projected_pts_final;
+      found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
 
-        if(found_checker_corners && imagePoints.size() == 40)
-        {   // 8x5 = 40
-          cv::Mat rotation_vector, translation_vector;
+      if(found_checker_corners && imagePoints.size() == 40)
+      {   // 8x5 = 40
+        cv::Mat rotation_vector, translation_vector;
 
-          bool success = cv::solvePnP(
-            world_points,                 // std::vector<cv::Point3f>
-            imagePoints,                   // std::vector<cv::Point2f>
-            cameraMatrix,                 // cv::Mat (3x3)
-            distCoeffs,                    // cv::Mat (1x5)
-            rotation_vector,                // Output rotation vector
-            translation_vector              // Output translation vector
+        bool success = cv::solvePnP(
+          world_points,                 // std::vector<cv::Point3f>
+          imagePoints,                   // std::vector<cv::Point2f>
+          cameraMatrix,                 // cv::Mat (3x3)
+          distCoeffs,                    // cv::Mat (1x5)
+          rotation_vector,                // Output rotation vector
+          translation_vector              // Output translation vector
+        );
+
+        if(success)
+        {
+          cv::projectPoints(
+            corners_wrld,            // std::vector<cv::Point3f>
+            rotation_vector,         // cv::Mat (rvec from solvePnP)
+            translation_vector,      // cv::Mat (tvec from solvePnP)
+            cameraMatrix,           // cv::Mat (3x3)
+            distCoeffs,             // cv::Mat (1x5)
+            projected_pts            // Output: std::vector<cv::Point2f>
           );
 
-          if(success)
-          {
-            cv::projectPoints(
-              corners_wrld,            // std::vector<cv::Point3f>
-              rotation_vector,         // cv::Mat (rvec from solvePnP)
-              translation_vector,      // cv::Mat (tvec from solvePnP)
-              cameraMatrix,           // cv::Mat (3x3)
-              distCoeffs,             // cv::Mat (1x5)
-              projected_pts            // Output: std::vector<cv::Point2f>
-            );
+          int thickness = 3;
 
-            int thickness = 3; 
+          projected_pts_final.push_back(projected_pts[0]);
+          projected_pts_final.push_back(projected_pts[2]);
+          projected_pts_final.push_back(projected_pts[3]);
+          projected_pts_final.push_back(projected_pts[1]);
 
-            projected_pts_final.push_back(projected_pts[0]);
-            projected_pts_final.push_back(projected_pts[2]);
-            projected_pts_final.push_back(projected_pts[3]);
-            projected_pts_final.push_back(projected_pts[1]);
+          cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
+        }
+      }
+      else
+      {
+        RCLCPP_INFO(this->get_logger(), "checker not found");
+        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+        pub_colored_image->publish(*modified_msg);
+        return;
+      }
+      try
+      {
+        tfGeomLidartoCam_actual = bufferCamLidTf_->lookupTransform(_frame_camera,_frame_lidar, tf2::TimePointZero);
+      }
+      catch(const tf2::TransformException & ex)
+      {
+        RCLCPP_INFO(this->get_logger(), "Invalid transform lidar -> camera");
+        RCLCPP_INFO(this->get_logger(), "[%s]",_frame_lidar.c_str() );
+        return;
+      }
 
-            cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
-            cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8); 
-            cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8); 
-            cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8); 
-          }
+      geometry_msgs::msg::TransformStamped tfGeom_lidar_origin;
+      tf2::TimePoint time = tf2_ros::fromMsg(msg->header.stamp);
+
+      tfGeomLidartoCam_actual.header.stamp = tf2_ros::toMsg(time);
+      double fusion_precision = 0;
+      double num_pts_in_polygon = 0;
+      double total_num_pts = 0;
+
+      for (const pcl::PointXYZ& p : final->points)
+      {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+        {
+          continue;
+        }
+
+        geometry_msgs::msg::PointStamped point;
+
+        point.point.x = p.x;
+        point.point.y = p.y;
+        point.point.z = p.z;
+
+        geometry_msgs::msg::PointStamped point_cam;
+
+        tf2::doTransform(point, point_cam, tfGeomLidartoCam_actual);
+
+        cv::Point2d uv;
+        cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
+        cv::Point2d uv_rectified;
+        if(cam_model_actual.initialized())
+        {
+          uv_rectified = cam_model_actual.project3dToPixel(pt_cv);
+          uv = cam_model_actual.unrectifyPoint(uv_rectified);   // change px to raw image px
         }
         else
         {
-          RCLCPP_INFO(this->get_logger(), "checker not found");
-          if(cv_ptr_temp != nullptr){
-            cv_bridge::CvImageConstPtr cv_ptr;
-            cv_ptr = cv_ptr_temp;
-            cv::Mat modifiable_image = cv_ptr->image.clone();
-            auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-            pub_colored_image->publish(*modified_msg);
-          }
+          RCLCPP_INFO(this->get_logger(), "cam model not initialized");
           return;
         }
-        try
+        if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
         {
-          tfGeomLidartoCam_actual = bufferCamLidTf_->lookupTransform(_frame_camera,_frame_lidar, tf2::TimePointZero);
-        }
-        catch(const tf2::TransformException & ex)
-        {
-          RCLCPP_INFO(this->get_logger(), "Invalid transform lidar -> camera");
-          RCLCPP_INFO(this->get_logger(), "[%s]",_frame_lidar.c_str() );
-          return;
-        }
+          total_num_pts++;
 
-        geometry_msgs::msg::TransformStamped tfGeom_lidar_origin;
-        tf2::TimePoint time = tf2_ros::fromMsg(msg->header.stamp);
-
-        tfGeomLidartoCam_actual.header.stamp = tf2_ros::toMsg(time);
-        double fusion_precision = 0;
-        double num_pts_in_polygon = 0;
-        double total_num_pts = 0;
-
-        for (const pcl::PointXYZ& p : final->points)
-        {
-          if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+          if(isPointInPolygon(projected_pts_final, uv))
           {
-            continue;
-          } 
-          const double range = sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-          //if (range > 0.1 && range < 12.0) {
+            // Color image point to green
+            num_pts_in_polygon++;
 
-          geometry_msgs::msg::PointStamped point;
-          
-          point.point.x = p.x;
-          point.point.y = p.y;
-          point.point.z = p.z;
-  
-          geometry_msgs::msg::PointStamped point_cam;
-
-          tf2::doTransform(point, point_cam, tfGeomLidartoCam_actual);
-          geometry_msgs::msg::PointStamped point_world;
-
-          cv::Point2d uv; 
-          cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
-          cv::Point2d uv_rectified;
-          if(cam_model_actual.initialized())
-          {
-            uv_rectified = cam_model_actual.project3dToPixel(pt_cv); 
-            uv = cam_model_actual.unrectifyPoint(uv_rectified);   // change px to raw image px
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
           }
           else
           {
-            RCLCPP_INFO(this->get_logger(), "cam model not initialized");
-            return;
-          }
-          if(cv_ptr != NULL)
-          {
-            if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
-            { 
-              total_num_pts++;
-
-              if(isPointInPolygon(projected_pts_final, uv))
-              {
-                // Color image point to green
-                num_pts_in_polygon++;
-
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-              }
-              else
-              {
-                // Color image point to red
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-              }
-            } 
+            // Color image point to red
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
           }
         }
-
-        fusion_precision = (total_num_pts > 0) ? (num_pts_in_polygon / total_num_pts) * 100.0 : 0.0;
-
-        std_msgs::msg::Float64 fusion_precision_msg;
-        fusion_precision_msg.data = fusion_precision;
-        pub_fusion_precision->publish(fusion_precision_msg);
-
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-
-        pub_colored_image->publish(*modified_msg);
       }
+
+      fusion_precision = (total_num_pts > 0) ? (num_pts_in_polygon / total_num_pts) * 100.0 : 0.0;
+
+      std_msgs::msg::Float64 fusion_precision_msg;
+      fusion_precision_msg.data = fusion_precision;
+      pub_fusion_precision->publish(fusion_precision_msg);
+
+      auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+
+      pub_colored_image->publish(*modified_msg);
     }
-    void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
-    {
-      cv_ptr_temp = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::RGB8);
-    }  
     void cam_cb(const sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
     {
       cam_model.fromCameraInfo(msg);  
@@ -420,11 +396,14 @@ class Ransac_node : public rclcpp::Node
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ransac_ptCloud;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_colored_image;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pub_fusion_precision;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_ptCloud_;
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_camera_img;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_camera_info;
-    cv_bridge::CvImageConstPtr cv_ptr_temp = nullptr;
-    
+
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+      sensor_msgs::msg::PointCloud2, sensor_msgs::msg::Image>;
+    message_filters::Subscriber<sensor_msgs::msg::PointCloud2> ptcloud_sub_;
+    message_filters::Subscriber<sensor_msgs::msg::Image> image_sub_;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+
     std::string _frame_origin;
     std::string _frame_lidar;
     std::string _frame_camera;
