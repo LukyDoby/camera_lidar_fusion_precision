@@ -59,6 +59,9 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include "tf2/exceptions.h"
 
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
 // #include "tutorial_interfaces/msg/float64_stamped.hpp"
 
 #include <fstream>
@@ -75,7 +78,7 @@ class Ransac_node : public rclcpp::Node
 {
   public:
     Ransac_node()
-    : Node("ransac_node"),  count_(0)
+    : Node("ransac_node")
     {
       rclcpp::QoS qos(10);
       auto rmw_qos_profile = qos.get_rmw_qos_profile();
@@ -177,15 +180,14 @@ class Ransac_node : public rclcpp::Node
       extract.setNegative(false);
       extract.filter(*cloud);
 
-        // Apllying RANSAC algorithm
+      // Apllying RANSAC algorithm
 
       std::vector<int> inliers;
       pcl::PointCloud<pcl::PointXYZ>::Ptr final (new pcl::PointCloud<pcl::PointXYZ>);
 
       if(cloud->points.size() > 3)
       {
-        pcl::SampleConsensusModelPlane<pcl::PointXYZ>::Ptr
-        model_plane (new pcl::SampleConsensusModelPlane<pcl::PointXYZ> (cloud));
+        pcl::SampleConsensusModelPlane<pcl::PointXYZ>::Ptr model_plane (new pcl::SampleConsensusModelPlane<pcl::PointXYZ> (cloud));
 
         pcl::RandomSampleConsensus<pcl::PointXYZ> ransac (model_plane);
         ransac.setDistanceThreshold (.01);
@@ -202,19 +204,21 @@ class Ransac_node : public rclcpp::Node
 
         pub_ransac_ptCloud->publish(*output);
       }
-      else
+      else if(cv_ptr_temp != nullptr)
       {
-        if(cv_ptr_temp != nullptr)
-        {
-          cv_bridge::CvImageConstPtr cv_ptr;
-          cv_ptr = cv_ptr_temp;
-          cv::Mat modifiable_image = cv_ptr->image.clone();
-          auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-          pub_colored_image->publish(*modified_msg);
-        }
-        RCLCPP_INFO(this->get_logger(), "cv_ptr_temp == nullptr || cloud->points.size() <= 3");
+        cv_bridge::CvImageConstPtr cv_ptr;
+        cv_ptr = cv_ptr_temp;
+        cv::Mat modifiable_image = cv_ptr->image.clone();
+        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+        pub_colored_image->publish(*modified_msg);
+        //RCLCPP_INFO(this->get_logger(), "cv_ptr_temp == nullptr || cloud->points.size() <= 3");
         return;
       }
+      else
+      {
+        RCLCPP_INFO(this->get_logger(), "Cannot publish colored image.");
+        return; 
+      } 
       
       geometry_msgs::msg::TransformStamped tfGeomLidartoCam_actual;
       image_geometry::PinholeCameraModel cam_model_actual = cam_model;
@@ -307,68 +311,66 @@ class Ransac_node : public rclcpp::Node
           } 
           const double range = sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
           //if (range > 0.1 && range < 12.0) {
-          if(true)
+
+          geometry_msgs::msg::PointStamped point;
+          
+          point.point.x = p.x;
+          point.point.y = p.y;
+          point.point.z = p.z;
+  
+          geometry_msgs::msg::PointStamped point_cam;
+
+          tf2::doTransform(point, point_cam, tfGeomLidartoCam_actual);
+          geometry_msgs::msg::PointStamped point_world;
+
+          cv::Point2d uv; 
+          cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
+          cv::Point2d uv_rectified;
+          if(cam_model_actual.initialized())
           {
-            geometry_msgs::msg::PointStamped point;
-            
-            point.point.x = p.x;
-            point.point.y = p.y;
-            point.point.z = p.z;
-    
-            geometry_msgs::msg::PointStamped point_cam;
+            uv_rectified = cam_model_actual.project3dToPixel(pt_cv); 
+            uv = cam_model_actual.unrectifyPoint(uv_rectified);   // change px to raw image px
+          }
+          else
+          {
+            RCLCPP_INFO(this->get_logger(), "cam model not initialized");
+            return;
+          }
+          if(cv_ptr != NULL)
+          {
+            if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
+            { 
+              total_num_pts++;
 
-            tf2::doTransform(point, point_cam, tfGeomLidartoCam_actual);
-            geometry_msgs::msg::PointStamped point_world;
+              if(isPointInPolygon(projected_pts_final, uv))
+              {
+                // Color image point to green
+                num_pts_in_polygon++;
 
-            cv::Point2d uv; 
-            cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
-            cv::Point2d uv_rectified;
-            if(cam_model_actual.initialized())
-            {
-              uv_rectified = cam_model_actual.project3dToPixel(pt_cv); 
-              uv = cam_model_actual.unrectifyPoint(uv_rectified);   // change px to raw image px
-            }
-            else
-            {
-              RCLCPP_INFO(this->get_logger(), "cam model not initialized");
-              return;
-            }
-            if(cv_ptr != NULL)
-            {
-              if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
-              { 
-                total_num_pts++;
-
-                if(isPointInPolygon(projected_pts_final, uv))
-                {
-                  // Color image point to green
-                  num_pts_in_polygon++;
-
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-                }
-                else
-                {
-                  // Color image point to red
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-                  modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-                }
-              } 
-            }
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+              }
+              else
+              {
+                // Color image point to red
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
+                modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+              }
+            } 
           }
         }
 
@@ -420,17 +422,16 @@ class Ransac_node : public rclcpp::Node
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_ptCloud_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_camera_img;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_camera_info;
-    cv_bridge::CvImageConstPtr cv_ptr_temp;
-    int count_;
+    cv_bridge::CvImageConstPtr cv_ptr_temp = nullptr;
     
     std::string _frame_origin;
     std::string _frame_lidar;
     std::string _frame_camera;
     std::unique_ptr<tf2_ros::Buffer>bufferLidarOrigin_;
     std::unique_ptr<tf2_ros::Buffer>bufferCamLidTf_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_2{nullptr};
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_3{nullptr};
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_ = nullptr;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_2 = nullptr;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_3 = nullptr;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer; 
     image_geometry::PinholeCameraModel cam_model;
 
