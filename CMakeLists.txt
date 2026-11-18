@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(cam_lid_fusion_precision_pkg)
+project(camera_lidar_fusion_precision)
 
 ## Compile as C++17, supported in ROS2
 set(CMAKE_CXX_STANDARD 17)

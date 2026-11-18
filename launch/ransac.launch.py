@@ -7,14 +7,14 @@ from ament_index_python.packages import get_package_share_directory
 def generate_launch_description():
 
     params = os.path.join(
-        get_package_share_directory('cam_lid_fusion_precision_pkg'),
+        get_package_share_directory('camera_lidar_fusion_precision'),
         'config', 'params.yaml'
     )
      
     listener_node =  Node(
-        package='cam_lid_fusion_precision_pkg',
+        package='camera_lidar_fusion_precision',
         executable='ransac_real_time',   
-        name="cam_lid_fusion_precision_pkg",
+        name="camera_lidar_fusion_precision",
         output="screen",
        parameters=[{'use_sim_time': True}]
        #parameters= [params]
@@ -34,7 +34,7 @@ def generate_launch_description():
     )
 
     desk_segment_node =  Node(
-        package='cam_lid_fusion_precision_pkg',
+        package='camera_lidar_fusion_precision',
         executable='desk_segment',   
         name="desk_segment",
         output="screen",
@@ -43,7 +43,7 @@ def generate_launch_description():
     )
 
     checker_detect_node = Node(
-        package='cam_lid_fusion_precision_pkg',
+        package='camera_lidar_fusion_precision',
         executable='checker_detect',   
         name="checker_detect",
         output="screen",
@@ -52,7 +52,7 @@ def generate_launch_description():
     )
 
     point_in_polygon_node = Node(
-        package='cam_lid_fusion_precision_pkg',
+        package='camera_lidar_fusion_precision',
         executable='pts_in_polygon',   
         name="pts_in_polygon",
         output="screen",
@@ -61,7 +61,7 @@ def generate_launch_description():
     )
 
     final_checker_spehre_fusion_node = Node(
-        package='cam_lid_fusion_precision_pkg',
+        package='camera_lidar_fusion_precision',
         executable='final_checker_sphere_fusion',   
         name="final_checker_sphere_fusion",
         output="screen",
