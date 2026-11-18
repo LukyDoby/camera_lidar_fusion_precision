@@ -91,9 +91,6 @@ class Ransac_node : public rclcpp::Node
       sync_->registerCallback(
         std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1, std::placeholders::_2));
 
-      sub_camera_info = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-      "/camera_info", 10, std::bind(&Ransac_node::cam_cb, this, std::placeholders::_1));
-      
       pub_camera_info = this->create_publisher<sensor_msgs::msg::CameraInfo>("/camera_info", 10);
       
       pub_ransac_ptCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/segmented_plane_cloud", 10);
@@ -116,6 +113,8 @@ class Ransac_node : public rclcpp::Node
       patternSize = cv::Size(8,5);
       cameraMatrix = (cv::Mat_<double>(3, 3) << 1182.1, 0.0, 931.3, 0.0, 1182.5, 586.7, 0.0, 0.0, 1.0);
       distCoeffs = (cv::Mat_<double>(1, 5) << -0.2184, 0.0610, -0.0324, 0.0, 0.0);
+
+      cam_model.fromCameraInfo(buildCameraInfo());
 
       int board_width = 8;
       int board_height = 5;
@@ -367,13 +366,8 @@ class Ransac_node : public rclcpp::Node
 
       pub_colored_image->publish(*modified_msg);
     }
-    void cam_cb(const sensor_msgs::msg::CameraInfo::ConstSharedPtr msg)
+    sensor_msgs::msg::CameraInfo buildCameraInfo()
     {
-      cam_model.fromCameraInfo(msg);  
-    }
-    void public_camera_info()
-    {
-      //auto msg = std::make_shared<sensor_msgs::msg::CameraInfo>();
       sensor_msgs::msg::CameraInfo msgs;
       msgs.header.stamp = this->now();
       msgs.header.frame_id = "camera_link";
@@ -388,11 +382,13 @@ class Ransac_node : public rclcpp::Node
       msgs.p = {1182.1, 0.0, 931.3, 0.0,
                 0.0, 1182.5, 586.7, 0.0,
                 0.0, 0.0, 1.0, 0.0};
-      
-      pub_camera_info->publish(msgs);
+      return msgs;
+    }
+    void public_camera_info()
+    {
+      pub_camera_info->publish(buildCameraInfo());
     }
 
-    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr sub_camera_info;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ransac_ptCloud;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_colored_image;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pub_fusion_precision;
