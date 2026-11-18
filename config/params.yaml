@@ -1,0 +1,5 @@
+---
+ransac_node:
+  ros__parameters:
+    use_sim_time: true
+    _frame_lidar: lidar_top/os_lidar
