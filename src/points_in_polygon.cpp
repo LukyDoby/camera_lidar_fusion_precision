@@ -226,7 +226,7 @@ class Ransac_node : public rclcpp::Node
       cv::Size patternSize(8, 5);  // Inner corners
       std::vector<cv::Point2f> projected_pts;
       std::vector<cv::Point2f> projected_pts_final;
-      found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
+      bool found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
 
       if(found_checker_corners && imagePoints.size() == 40)
       {   // 8x5 = 40
@@ -263,6 +263,13 @@ class Ransac_node : public rclcpp::Node
           cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
           cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
           cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
+        }
+        else
+        {
+          RCLCPP_INFO(this->get_logger(), "PnP not solved");
+          auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+          pub_colored_image->publish(*modified_msg);
+          return;
         }
       }
       else
@@ -417,8 +424,6 @@ class Ransac_node : public rclcpp::Node
     float y_max = 1.5;
     float z_min = -1;
     float z_max = 1.8;
-
-    bool found_checker_corners;
 
     std::vector<cv::Point2f> imagePoints;
     cv::Size patternSize;  // Inner corners

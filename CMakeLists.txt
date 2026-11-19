@@ -22,6 +22,7 @@ find_package(message_filters REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(PCL REQUIRED)
+find_package(message_filters REQUIRED)
 #find_package(PCL REQUIRED COMPONENTS common filters)
 
 ## Declare dependencies
@@ -45,6 +46,7 @@ tf2_ros
 tf2_geometry_msgs
 geometry_msgs
 PCL
+message_filters
 )
 
 ## Specify additional locations of header files
