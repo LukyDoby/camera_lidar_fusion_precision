@@ -96,14 +96,7 @@ class Ransac_node : public rclcpp::Node
       pub_fusion_precision = this->create_publisher<std_msgs::msg::Float64>("/fusion_precision", 10);
           
       bufferCamLidTf_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-      bufferLidarOrigin_= std::make_unique<tf2_ros::Buffer>(this->get_clock());
-      tf_buffer= std::make_unique<tf2_ros::Buffer>(this->get_clock());
       tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*bufferCamLidTf_);
-      tf_listener_2 = std::make_shared<tf2_ros::TransformListener>(*bufferLidarOrigin_);
-      tf_listener_3 = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);
-    
-      // timer_ = this->create_wall_timer(
-      // 500ms, std::bind(&Ransac_node::timer_callback, this));
 
       _frame_camera = this->declare_parameter<std::string>("_frame_camera", "camera_link");
       _frame_lidar = this->declare_parameter<std::string>("_frame_lidar", "lidar_link");
@@ -424,12 +417,8 @@ class Ransac_node : public rclcpp::Node
     std::string _frame_origin;
     std::string _frame_lidar;
     std::string _frame_camera;
-    std::unique_ptr<tf2_ros::Buffer>bufferLidarOrigin_;
     std::unique_ptr<tf2_ros::Buffer>bufferCamLidTf_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_ = nullptr;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_2 = nullptr;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_3 = nullptr;
-    std::unique_ptr<tf2_ros::Buffer> tf_buffer; 
     image_geometry::PinholeCameraModel cam_model;
 
     float x_max = -0.5;
