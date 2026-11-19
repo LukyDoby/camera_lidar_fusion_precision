@@ -92,8 +92,6 @@ class Ransac_node : public rclcpp::Node
         std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1, std::placeholders::_2));
 
       pub_camera_info = this->create_publisher<sensor_msgs::msg::CameraInfo>("/camera_info", 10);
-      
-      pub_ransac_ptCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/segmented_plane_cloud", 10);
       pub_colored_image = this->create_publisher<sensor_msgs::msg::Image>("/image_color", 10);
       pub_fusion_precision = this->create_publisher<std_msgs::msg::Float64>("/fusion_precision", 10);
           
@@ -211,20 +209,12 @@ class Ransac_node : public rclcpp::Node
         ransac.computeModel();
         ransac.getInliers(inliers);
         pcl::copyPointCloud (*cloud, inliers, *final);
-
-        // Publishing segmented calibration board
-        auto output = std::make_shared<sensor_msgs::msg::PointCloud2>();
-
-        pcl::toROSMsg(*final, *output);
-        output->header.frame_id = _frame_lidar;
-        output->header.stamp = msg->header.stamp;
-
-        pub_ransac_ptCloud->publish(*output);
       }
       else
       {
         auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
         pub_colored_image->publish(*modified_msg);
+        RCLCPP_ERROR(this->get_logger(), "Point cloud too small");
         return;
       }
 
@@ -395,6 +385,7 @@ class Ransac_node : public rclcpp::Node
       auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
 
       pub_colored_image->publish(*modified_msg);
+      // RCLCPP_INFO(this->get_logger(), "Color image published");
     }
     sensor_msgs::msg::CameraInfo buildCameraInfo()
     {
