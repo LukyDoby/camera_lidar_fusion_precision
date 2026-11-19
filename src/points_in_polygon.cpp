@@ -163,7 +163,16 @@ class Ransac_node : public rclcpp::Node
     {
       public_camera_info();
 
-      cv_bridge::CvImageConstPtr cv_ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::RGB8);
+      cv_bridge::CvImageConstPtr cv_ptr = nullptr;
+      try
+      {
+        cv_ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::RGB8);
+      }
+      catch (const cv_bridge::Exception & ex)
+      {
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge conversion failed: %s", ex.what());
+        return;
+      }
       cv::Mat modifiable_image = cv_ptr->image.clone();
 
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud = pcl::make_shared<pcl::PointCloud<pcl::PointXYZ>>();  //(new pcl::PointCloud<pcl::PointXYZ>)
@@ -226,55 +235,69 @@ class Ransac_node : public rclcpp::Node
       cv::Size patternSize(8, 5);  // Inner corners
       std::vector<cv::Point2f> projected_pts;
       std::vector<cv::Point2f> projected_pts_final;
-      bool found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
+      bool found_checker_corners = false;
+      bool success = false;
 
-      if(found_checker_corners && imagePoints.size() == 40)
-      {   // 8x5 = 40
-        cv::Mat rotation_vector, translation_vector;
+      try
+      {
+        found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
 
-        bool success = cv::solvePnP(
-          world_points,                 // std::vector<cv::Point3f>
-          imagePoints,                   // std::vector<cv::Point2f>
-          cameraMatrix,                 // cv::Mat (3x3)
-          distCoeffs,                    // cv::Mat (1x5)
-          rotation_vector,                // Output rotation vector
-          translation_vector              // Output translation vector
-        );
+        if(found_checker_corners && imagePoints.size() == 40)
+        {   // 8x5 = 40
+          cv::Mat rotation_vector, translation_vector;
 
-        if(success)
-        {
-          cv::projectPoints(
-            corners_wrld,            // std::vector<cv::Point3f>
-            rotation_vector,         // cv::Mat (rvec from solvePnP)
-            translation_vector,      // cv::Mat (tvec from solvePnP)
-            cameraMatrix,           // cv::Mat (3x3)
-            distCoeffs,             // cv::Mat (1x5)
-            projected_pts            // Output: std::vector<cv::Point2f>
+          success = cv::solvePnP(
+            world_points,                 // std::vector<cv::Point3f>
+            imagePoints,                   // std::vector<cv::Point2f>
+            cameraMatrix,                 // cv::Mat (3x3)
+            distCoeffs,                    // cv::Mat (1x5)
+            rotation_vector,                // Output rotation vector
+            translation_vector              // Output translation vector
           );
 
-          int thickness = 3;
+          if(success)
+          {
+            cv::projectPoints(
+              corners_wrld,            // std::vector<cv::Point3f>
+              rotation_vector,         // cv::Mat (rvec from solvePnP)
+              translation_vector,      // cv::Mat (tvec from solvePnP)
+              cameraMatrix,           // cv::Mat (3x3)
+              distCoeffs,             // cv::Mat (1x5)
+              projected_pts            // Output: std::vector<cv::Point2f>
+            );
 
-          projected_pts_final.push_back(projected_pts[0]);
-          projected_pts_final.push_back(projected_pts[2]);
-          projected_pts_final.push_back(projected_pts[3]);
-          projected_pts_final.push_back(projected_pts[1]);
+            int thickness = 3;
 
-          cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
-          cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
-          cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
-          cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
-        }
-        else
-        {
-          RCLCPP_INFO(this->get_logger(), "PnP not solved");
-          auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-          pub_colored_image->publish(*modified_msg);
-          return;
+            projected_pts_final.push_back(projected_pts[0]);
+            projected_pts_final.push_back(projected_pts[2]);
+            projected_pts_final.push_back(projected_pts[3]);
+            projected_pts_final.push_back(projected_pts[1]);
+
+            cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
+            cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
+            cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
+            cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
+          }
         }
       }
-      else
+      catch (const cv::Exception & ex)
+      {
+        RCLCPP_ERROR(this->get_logger(), "Checkerboard detection/PnP threw an exception: %s", ex.what());
+        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+        pub_colored_image->publish(*modified_msg);
+        return;
+      }
+
+      if(!found_checker_corners || imagePoints.size() != 40)
       {
         RCLCPP_INFO(this->get_logger(), "checker not found");
+        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+        pub_colored_image->publish(*modified_msg);
+        return;
+      }
+      if(!success)
+      {
+        RCLCPP_INFO(this->get_logger(), "PnP not solved");
         auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
         pub_colored_image->publish(*modified_msg);
         return;
