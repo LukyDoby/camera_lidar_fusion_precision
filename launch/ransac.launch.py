@@ -25,6 +25,7 @@ def generate_launch_description():
         executable="static_transform_publisher",
         name="sensor_link_stp",
         arguments=[ "0.1293", "-0.0109", "-0.0193","2.3856", "1.5542", "-2.3088", "camera_link", "lidar_link"] # checker1
+        # ros2 run tf2_ros static_transform_publisher --x 0.1293 --y -0.0109 --z -0.0193 --roll 2.3856 --pitch 1.5542 --yaw -2.3088 --frame-id camera_link --child-frame-id lidar_link
         # arguments=[ "0.2007", "-0.0400" , "-0.0193" ,"-0.3646 ", "1.5515", " 1.2181", "pylon_camera", "lidar_top/os_lidar"] # checker2
         # arguments=[ "0.2636", "-0.0247", "-0.0310" ,"-2.9113","1.5653","-1.3437", "pylon_camera", "lidar_top/os_lidar"] # checker3
         # arguments=[ "0.1482" , "-0.0449", "-0.0525" ,"-3.1097 ","1.3135", "-1.5298", "pylon_camera", "lidar_top/os_lidar"] # checker4

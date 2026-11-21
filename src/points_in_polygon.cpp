@@ -87,7 +87,8 @@ class Ransac_node : public rclcpp::Node
       ptcloud_sub_.subscribe(this, "/lidar/poincloud", rmw_qos_profile);
       image_sub_.subscribe(this, "/camera/image", rmw_qos_profile);
       sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-        SyncPolicy(10), ptcloud_sub_, image_sub_);
+        SyncPolicy(20), ptcloud_sub_, image_sub_);
+      sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.5)); // 0.5 s
       sync_->registerCallback(
         std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1, std::placeholders::_2));
 
@@ -128,47 +129,55 @@ class Ransac_node : public rclcpp::Node
 
   private:
 
-    bool isPointInPolygon(const std::vector<cv::Point2f>& polygon, const cv::Point2d& point)
-    {
-      int n = polygon.size();
-      int count = 0;
-
-      for (int i = 0; i < n; i++) {
-        cv::Point2f p1 = polygon[i];
-
-        cv::Point2f p2 = polygon[(i + 1) % n];
-
-        if ((point.y > min(p1.y, p2.y)) && (point.y <= max(p1.y, p2.y)) && (point.x <= max(p1.x, p2.x)))
-        {
-          double xIntersect = (point.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y);
-          if (p1.x == p2.x || point.x <= xIntersect)
-          {
-            count++;
-          }
-        }
-      }
-      return count % 2 == 1;
-    }
     void ptCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
                           const sensor_msgs::msg::Image::ConstSharedPtr image_msg)
     {
       public_camera_info();
 
-      cv_bridge::CvImageConstPtr cv_ptr = nullptr;
+      cv_bridge::CvImageConstPtr cv_ptr;
       try
       {
         cv_ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::RGB8);
       }
       catch (const cv_bridge::Exception & ex)
       {
-        RCLCPP_ERROR(this->get_logger(), "cv_bridge conversion failed: %s", ex.what());
+        RCLCPP_INFO(this->get_logger(), "cv_bridge conversion failed: %s", ex.what());
         return;
       }
-      cv::Mat modifiable_image = cv_ptr->image.clone();
+      cv::Mat modifiable_image = cv_ptr->image;
+
+      imagePoints.clear();
+      try
+      {
+        bool found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints,
+          cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_FAST_CHECK);
+
+        if (!found_checker_corners || imagePoints.size() != 40)
+        {
+          RCLCPP_INFO(this->get_logger(), "Checkerboard not found");
+          publishImage(image_msg->header, modifiable_image);
+          return;
+        }
+      }
+      catch (const std::exception & ex)
+      {
+        RCLCPP_INFO(this->get_logger(), "found_checker_corners failed: %s", ex.what());
+        publishImage(image_msg->header, modifiable_image);
+        return;
+      }
 
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud = pcl::make_shared<pcl::PointCloud<pcl::PointXYZ>>();  //(new pcl::PointCloud<pcl::PointXYZ>)
 
-      pcl::fromROSMsg(*msg, *cloud);
+      try
+      {
+        pcl::fromROSMsg(*msg, *cloud);
+      }
+      catch(const std::exception & ex)
+      {
+        RCLCPP_INFO(this->get_logger(), "fromROSMsg failed: %s", ex.what());
+        publishImage(image_msg->header, modifiable_image);
+        return;
+      }
 
       pcl::PointIndices::Ptr points_in(new pcl::PointIndices());
       pcl::ExtractIndices<pcl::PointXYZ> extract;
@@ -205,84 +214,62 @@ class Ransac_node : public rclcpp::Node
       }
       else
       {
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-        pub_colored_image->publish(*modified_msg);
-        RCLCPP_ERROR(this->get_logger(), "Point cloud too small");
+        publishImage(image_msg->header, modifiable_image);
+        RCLCPP_INFO(this->get_logger(), "Point cloud too small");
         return;
       }
 
       geometry_msgs::msg::TransformStamped tfGeomLidartoCam_actual;
-      image_geometry::PinholeCameraModel cam_model_actual = cam_model;
 
       // Detecting checkerboard
       cv::Size patternSize(8, 5);  // Inner corners
       std::vector<cv::Point2f> projected_pts;
       std::vector<cv::Point2f> projected_pts_final;
-      bool found_checker_corners = false;
-      bool success = false;
 
       try
       {
-        found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints);
-
-        if(found_checker_corners && imagePoints.size() == 40)
-        {   // 8x5 = 40
-          cv::Mat rotation_vector, translation_vector;
-
-          success = cv::solvePnP(
-            world_points,                 // std::vector<cv::Point3f>
-            imagePoints,                   // std::vector<cv::Point2f>
-            cameraMatrix,                 // cv::Mat (3x3)
-            distCoeffs,                    // cv::Mat (1x5)
-            rotation_vector,                // Output rotation vector
-            translation_vector              // Output translation vector
+        cv::Mat rotation_vector, translation_vector;
+        bool success = cv::solvePnP(
+          world_points,                 // std::vector<cv::Point3f>
+          imagePoints,                   // std::vector<cv::Point2f>
+          cameraMatrix,                 // cv::Mat (3x3)
+          distCoeffs,                    // cv::Mat (1x5)
+          rotation_vector,                // Output rotation vector
+          translation_vector              // Output translation vector
+        );
+        if(success)
+        {
+          cv::projectPoints(
+            corners_wrld,            // std::vector<cv::Point3f>
+            rotation_vector,         // cv::Mat (rvec from solvePnP)
+            translation_vector,      // cv::Mat (tvec from solvePnP)
+            cameraMatrix,           // cv::Mat (3x3)
+            distCoeffs,             // cv::Mat (1x5)
+            projected_pts            // Output: std::vector<cv::Point2f>
           );
 
-          if(success)
-          {
-            cv::projectPoints(
-              corners_wrld,            // std::vector<cv::Point3f>
-              rotation_vector,         // cv::Mat (rvec from solvePnP)
-              translation_vector,      // cv::Mat (tvec from solvePnP)
-              cameraMatrix,           // cv::Mat (3x3)
-              distCoeffs,             // cv::Mat (1x5)
-              projected_pts            // Output: std::vector<cv::Point2f>
-            );
+          int thickness = 3;
 
-            int thickness = 3;
+          projected_pts_final.push_back(projected_pts[0]);
+          projected_pts_final.push_back(projected_pts[2]);
+          projected_pts_final.push_back(projected_pts[3]);
+          projected_pts_final.push_back(projected_pts[1]);
 
-            projected_pts_final.push_back(projected_pts[0]);
-            projected_pts_final.push_back(projected_pts[2]);
-            projected_pts_final.push_back(projected_pts[3]);
-            projected_pts_final.push_back(projected_pts[1]);
-
-            cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
-            cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
-            cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
-            cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
-          }
+          cv::line(modifiable_image, projected_pts_final[0], projected_pts_final[1], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[1], projected_pts_final[2], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[2], projected_pts_final[3], Scalar(0, 255, 255), thickness, LINE_8);
+          cv::line(modifiable_image, projected_pts_final[3], projected_pts_final[0], Scalar(0, 255, 255), thickness, LINE_8);
+        }
+        else
+        {
+          RCLCPP_INFO(this->get_logger(), "PnP not succeded");
+          publishImage(image_msg->header, modifiable_image);
         }
       }
       catch (const cv::Exception & ex)
       {
-        RCLCPP_ERROR(this->get_logger(), "Checkerboard detection/PnP threw an exception: %s", ex.what());
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-        pub_colored_image->publish(*modified_msg);
-        return;
-      }
-
-      if(!found_checker_corners || imagePoints.size() != 40)
-      {
-        RCLCPP_INFO(this->get_logger(), "checker not found");
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-        pub_colored_image->publish(*modified_msg);
-        return;
-      }
-      if(!success)
-      {
-        RCLCPP_INFO(this->get_logger(), "PnP not solved");
-        auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
-        pub_colored_image->publish(*modified_msg);
+        RCLCPP_INFO(this->get_logger(), "Checkerboard detection/PnP threw an exception: %s", ex.what());
+        publishImage(image_msg->header, modifiable_image);
         return;
       }
       try
@@ -293,10 +280,10 @@ class Ransac_node : public rclcpp::Node
       {
         RCLCPP_INFO(this->get_logger(), "Invalid transform lidar -> camera");
         RCLCPP_INFO(this->get_logger(), "[%s]",_frame_lidar.c_str() );
+        publishImage(image_msg->header, modifiable_image);
         return;
       }
 
-      geometry_msgs::msg::TransformStamped tfGeom_lidar_origin;
       tf2::TimePoint time = tf2_ros::fromMsg(msg->header.stamp);
 
       tfGeomLidartoCam_actual.header.stamp = tf2_ros::toMsg(time);
@@ -324,21 +311,22 @@ class Ransac_node : public rclcpp::Node
         cv::Point2d uv;
         cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
         cv::Point2d uv_rectified;
-        if(cam_model_actual.initialized())
+        if(cam_model.initialized())
         {
-          uv_rectified = cam_model_actual.project3dToPixel(pt_cv);
-          uv = cam_model_actual.unrectifyPoint(uv_rectified);   // change px to raw image px
+          uv_rectified = cam_model.project3dToPixel(pt_cv);
+          uv = cam_model.unrectifyPoint(uv_rectified);   // change px to raw image px
         }
         else
         {
           RCLCPP_INFO(this->get_logger(), "cam model not initialized");
+          publishImage(image_msg->header, modifiable_image);
           return;
         }
         if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
         {
           total_num_pts++;
 
-          if(isPointInPolygon(projected_pts_final, uv))
+          if(cv::pointPolygonTest(projected_pts_final, cv::Point2f(uv), false) >= 0)
           {
             // Color image point to green
             num_pts_in_polygon++;
@@ -375,9 +363,11 @@ class Ransac_node : public rclcpp::Node
       fusion_precision_msg.data = fusion_precision;
       pub_fusion_precision->publish(fusion_precision_msg);
 
-      auto modified_msg = cv_bridge::CvImage(msg->header, "rgb8", modifiable_image).toImageMsg();
+      // auto modified_msg = cv_bridge::CvImage(image_msg->header, "rgb8", modifiable_image).toImageMsg();
 
-      pub_colored_image->publish(*modified_msg);
+      // pub_colored_image->publish(*modified_msg);
+
+      publishImage(image_msg->header, modifiable_image);
       // RCLCPP_INFO(this->get_logger(), "Color image published");
     }
     sensor_msgs::msg::CameraInfo buildCameraInfo()
@@ -402,8 +392,11 @@ class Ransac_node : public rclcpp::Node
     {
       pub_camera_info->publish(buildCameraInfo());
     }
+    void publishImage(const std_msgs::msg::Header & header, const cv::Mat & img)
+    {
+      pub_colored_image->publish(*cv_bridge::CvImage(header, "rgb8", img).toImageMsg());
+    }
 
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ransac_ptCloud;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_colored_image;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pub_fusion_precision;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_camera_info;
