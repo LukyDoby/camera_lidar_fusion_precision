@@ -96,8 +96,6 @@ class Ransac_node : public rclcpp::Node
       cameraMatrix = (cv::Mat_<double>(3, 3) << 1182.1, 0.0, 931.3, 0.0, 1182.5, 586.7, 0.0, 0.0, 1.0);
       distCoeffs = (cv::Mat_<double>(1, 5) << -0.2184, 0.0610, -0.0324, 0.0, 0.0);
 
-      cam_model.fromCameraInfo(buildCameraInfo());
-
       int board_width = 8;
       int board_height = 5;
       float squareSize = 42.5;
@@ -122,7 +120,6 @@ class Ransac_node : public rclcpp::Node
     void ptCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
                           const sensor_msgs::msg::Image::ConstSharedPtr image_msg)
     {
-      public_camera_info();
 
       cv_bridge::CvImageConstPtr cv_ptr;
       try
@@ -352,28 +349,7 @@ class Ransac_node : public rclcpp::Node
 
       publishImage(image_msg->header, modifiable_image);
     }
-    sensor_msgs::msg::CameraInfo buildCameraInfo()
-    {
-      sensor_msgs::msg::CameraInfo msgs;
-      msgs.header.stamp = this->now();
-      msgs.header.frame_id = "camera_link";
-      msgs.distortion_model = "plumb_bob";
-      msgs.height = 1200;
-      msgs.width = 1920;
-      msgs.k = {1182.1, 0.0, 931.3,
-                0.0, 1182.5, 586.7,
-                0.0, 0.0, 1.0};
-      msgs.d = {-0.2184, 0.0610, -0.0324, 0, 0.000000};
-      msgs.r = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
-      msgs.p = {1182.1, 0.0, 931.3, 0.0,
-                0.0, 1182.5, 586.7, 0.0,
-                0.0, 0.0, 1.0, 0.0};
-      return msgs;
-    }
-    void public_camera_info()
-    {
-      pub_camera_info->publish(buildCameraInfo());
-    }
+
     void publishImage(const std_msgs::msg::Header & header, const cv::Mat & img)
     {
       pub_colored_image->publish(*cv_bridge::CvImage(header, "rgb8", img).toImageMsg());
@@ -394,7 +370,6 @@ class Ransac_node : public rclcpp::Node
     std::string _frame_camera;
     std::unique_ptr<tf2_ros::Buffer>bufferCamLidTf_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_ = nullptr;
-    image_geometry::PinholeCameraModel cam_model;
 
     float x_max = -0.5;
     float x_min = -3;
