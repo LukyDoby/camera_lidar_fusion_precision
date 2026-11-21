@@ -12,11 +12,8 @@
 #include <random>
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
-//#include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/image_encodings.hpp>
-//#include <sensor_msgs/Image.h>
 #include <sensor_msgs/msg/image.hpp>
-//#include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/msg/camera_info.h>
 
 #include <cv_bridge/cv_bridge.h>
@@ -24,13 +21,10 @@
 
 /* some OpenCV includes */
 #include <opencv2/opencv.hpp>
-//#include <opencv2/core/core.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/calib3d.hpp>
-//#include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-//#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
 // PCL specific includes 
@@ -63,7 +57,6 @@
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
-// #include "tutorial_interfaces/msg/float64_stamped.hpp"
 
 #include <fstream>
 #include <iomanip> 
@@ -71,9 +64,6 @@
 using namespace std::chrono_literals;
 using namespace std;
 using namespace cv;
-
-/* This example creates a subclass of Node and uses std::bind() to register a
-* member function as a callback from the timer. */
 
 class Ransac_node : public rclcpp::Node
 {
@@ -301,68 +291,55 @@ class Ransac_node : public rclcpp::Node
       double num_pts_in_polygon = 0;
       double total_num_pts = 0;
 
+      const Eigen::Isometry3d T_cam_lidar = tf2::transformToEigen(tfGeomLidartoCam_actual);
+      std::vector<cv::Point3f> pts_cam;
+      pts_cam.reserve(final->size());
       for (const pcl::PointXYZ& p : final->points)
       {
-        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
-        {
-          continue;
-        }
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
 
-        geometry_msgs::msg::PointStamped point;
-
-        point.point.x = p.x;
-        point.point.y = p.y;
-        point.point.z = p.z;
-
-        geometry_msgs::msg::PointStamped point_cam;
-
-        tf2::doTransform(point, point_cam, tfGeomLidartoCam_actual);
-
-        cv::Point2d uv;
-        cv::Point3d pt_cv(point_cam.point.x, point_cam.point.y,point_cam.point.z);
-        cv::Point2d uv_rectified;
-        if(cam_model.initialized())
-        {
-          uv_rectified = cam_model.project3dToPixel(pt_cv);
-          uv = cam_model.unrectifyPoint(uv_rectified);   // change px to raw image px
-        }
-        else
-        {
-          RCLCPP_INFO(this->get_logger(), "cam model not initialized");
-          publishImage(image_msg->header, modifiable_image);
-          return;
-        }
-        if ( uv.y >= 2 && uv.y < (cv_ptr->image.rows-2) && uv.x >= 2 && uv.x < (cv_ptr->image.cols-2))
+        const Eigen::Vector3d pc = T_cam_lidar * Eigen::Vector3d(p.x, p.y, p.z);
+        if (pc.z() <= 0.0) continue;                       // behind the camera
+        pts_cam.emplace_back(pc.x(), pc.y(), pc.z());
+      }
+      std::vector<cv::Point2f> uv;
+      if (!pts_cam.empty()) {
+        const cv::Mat zero = cv::Mat::zeros(3, 1, CV_64F);  // already in the camera frame
+        cv::projectPoints(pts_cam, zero, zero, cameraMatrix, distCoeffs, uv);
+      }
+      for(const auto & q : uv)
+      {
+        if ( q.y >= 2 && q.y < (cv_ptr->image.rows-2) && q.x >= 2 && q.x < (cv_ptr->image.cols-2))
         {
           total_num_pts++;
 
-          if(cv::pointPolygonTest(projected_pts_final, cv::Point2f(uv), false) >= 0)
+          if(cv::pointPolygonTest(projected_pts_final, cv::Point2f(q), false) >= 0)
           {
             // Color image point to green
             num_pts_in_polygon++;
 
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(0, 255, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)+1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)+1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)-1) = cv::Vec3b(0, 255, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)+1) = cv::Vec3b(0, 255, 0);
           }
           else
           {
             // Color image point to red
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y), int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)-1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)-1) = cv::Vec3b(255, 0, 0);
-            modifiable_image.at<cv::Vec3b>(int(uv.y)+1, int(uv.x)+1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y), int(q.x)+1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)-1, int(q.x)+1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)-1) = cv::Vec3b(255, 0, 0);
+            modifiable_image.at<cv::Vec3b>(int(q.y)+1, int(q.x)+1) = cv::Vec3b(255, 0, 0);
           }
         }
       }
@@ -373,12 +350,7 @@ class Ransac_node : public rclcpp::Node
       fusion_precision_msg.data = fusion_precision;
       pub_fusion_precision->publish(fusion_precision_msg);
 
-      // auto modified_msg = cv_bridge::CvImage(image_msg->header, "rgb8", modifiable_image).toImageMsg();
-
-      // pub_colored_image->publish(*modified_msg);
-
       publishImage(image_msg->header, modifiable_image);
-      // RCLCPP_INFO(this->get_logger(), "Color image published");
     }
     sensor_msgs::msg::CameraInfo buildCameraInfo()
     {
