@@ -81,13 +81,13 @@ class Ransac_node : public rclcpp::Node
     Ransac_node()
     : Node("ransac_node")
     {
-      rclcpp::QoS qos(10);
+      rclcpp::QoS qos(30);
       auto rmw_qos_profile = qos.get_rmw_qos_profile();
 
       ptcloud_sub_.subscribe(this, "/lidar/poincloud", rmw_qos_profile);
       image_sub_.subscribe(this, "/camera/image", rmw_qos_profile);
       sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-        SyncPolicy(20), ptcloud_sub_, image_sub_);
+        SyncPolicy(30), ptcloud_sub_, image_sub_);
       sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.5)); // 0.5 s
       sync_->registerCallback(
         std::bind(&Ransac_node::ptCloudCallback, this, std::placeholders::_1, std::placeholders::_2));
@@ -149,10 +149,20 @@ class Ransac_node : public rclcpp::Node
       imagePoints.clear();
       try
       {
-        bool found_checker_corners = cv::findChessboardCorners(modifiable_image, patternSize, imagePoints,
-          cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_FAST_CHECK);
+        cv::Mat gray, small;
+        cv::cvtColor(modifiable_image, gray, cv::COLOR_RGB2GRAY);
+        const double s = 0.5;
+        cv::resize(gray, small, cv::Size(), s, s, cv::INTER_AREA);
 
-        if (!found_checker_corners || imagePoints.size() != 40)
+        bool found = cv::findChessboardCorners(small, patternSize, imagePoints,
+            cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_FAST_CHECK);
+        if (found) {
+          for (auto & p : imagePoints) p *= static_cast<float>(1.0 / s);   // back to full-res pixels
+          cv::cornerSubPix(gray, imagePoints, {11, 11}, {-1, -1},
+              cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.01));
+        }
+        
+        if (!found || imagePoints.size() != 40)
         {
           RCLCPP_INFO(this->get_logger(), "Checkerboard not found");
           publishImage(image_msg->header, modifiable_image);
